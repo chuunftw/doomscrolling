@@ -409,6 +409,66 @@ class Offline(unittest.TestCase):
         gateway.call_json.assert_called_once_with('chat.history', body={'session_id': 'chosen-session', 'limit': 5})
         gateway.close.assert_called_once()
 
+    def test_bound_mcp_hides_general_history_and_session_list(self):
+        server = self.server(live=True, tasks=True)
+        server.bound_session = 'chosen-session'
+        names = server.available()
+        self.assertNotIn('muse_sessions', names)
+        self.assertNotIn('muse_history', names)
+        self.assertIn('get_reel_result', names)
+        self.assertNotIn('session_id', names['prepare_reel_request']['inputSchema']['properties'])
+        value = server.invoke('prepare_reel_request', {'request_id': 'bound', 'url': URL})
+        self.assertEqual(value['session_id'], 'chosen-session')
+
+    def test_bound_mcp_refuses_other_chat_requests_before_connecting(self):
+        review.prepare(self.root, 'other', URL, 'other-session')
+        server = self.server(live=True, tasks=True)
+        server.bound_session = 'chosen-session'
+        for name in ['inspect_reel_request', 'check_reel_request', 'get_reel_result', 'dispatch_reel_request']:
+            arguments = {'request_id': 'other'}
+            if name == 'dispatch_reel_request':
+                arguments['approved_digest'] = review.load_request(self.root, 'other')['sha256']
+            with self.subTest(name=name), patch('muse_reels.mcp.connect') as connect, self.assertRaises(PermissionError):
+                server.invoke(name, arguments)
+            connect.assert_not_called()
+
+    def test_bound_mcp_schema_does_not_modify_unbound_servers(self):
+        bound = self.server(live=True)
+        bound.bound_session = 'chosen-session'
+        bound.available()
+        self.assertIn('session_id', self.server().available()['prepare_reel_request']['inputSchema']['properties'])
+
+    def test_result_read_excludes_prior_messages_other_users_and_proactive_updates(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 1, 'event_name': 'message.assistant', 'payload': {'content': 'older unrelated private message'}},
+            {'seq': 2, 'event_name': 'message.user', 'message_id': 'our-message', 'payload': {'content': value['prompt']}},
+            {'seq': 3, 'event_name': 'message.assistant', 'reply_to_message_id': 'proactive-self', 'payload': {'content': 'unrelated background update'}},
+            {'seq': 4, 'event_name': 'message.assistant', 'payload': {'content': 'Selected reel evidence', 'status': 'completed'}},
+            {'seq': 5, 'event_name': 'message.user', 'payload': {'content': 'different private task'}},
+            {'seq': 6, 'event_name': 'message.assistant', 'payload': {'content': 'different private answer'}}]}
+        result = review.get_result(self.root, 'one-reel-001', lambda: gateway)
+        self.assertEqual([r['text'] for r in result['replies']], ['Selected reel evidence'])
+        self.assertEqual(result['task_completion'], 'unverified')
+        self.assertNotIn('private', json.dumps(result))
+        gateway.close.assert_called_once()
+
+    def test_result_read_does_not_leak_history_when_request_is_missing(self):
+        self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [{'seq': 1, 'event_name': 'message.assistant', 'payload': {'content': 'unrelated private message'}}]}
+        result = review.get_result(self.root, 'one-reel-001', lambda: gateway)
+        self.assertFalse(result['request_in_history'])
+        self.assertEqual(result['replies'], [])
+        self.assertNotIn('unrelated private', json.dumps(result))
+
+    def test_result_read_unknown_shape_does_not_claim_missing_request(self):
+        self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'unexpected': 'private'}
+        self.assertIsNone(review.get_result(self.root, 'one-reel-001', lambda: gateway)['request_in_history'])
+
     def test_credential_store_refuses_other_file_types(self):
         with patch('muse_reels.storage.dpapi') as crypt, self.assertRaises(ValueError):
             storage.save_cookie(self.root / 'code.py', 'synthetic_cookie_value_only_for_test')

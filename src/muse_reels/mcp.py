@@ -5,7 +5,7 @@ import sys
 
 from .cli import connect
 from .policy import session_id
-from .review import dispatch, load_request, prepare
+from .review import check_request, dispatch, get_result, load_request, prepare
 
 
 def tool(name, description, properties, required=None):
@@ -19,6 +19,8 @@ TOOLS = [
     tool('prepare_reel_request', 'Offline: prepare one-source request for human review; no Muse/account access.',
          {'request_id': STRING, 'url': STRING, 'session_id': STRING}),
     tool('inspect_reel_request', 'Offline: validate and print a prepared request and its digest.', {'request_id': STRING}),
+    tool('check_reel_request', 'Read only the prepared request\'s selected recent history; return match booleans, not private messages.', {'request_id': STRING}),
+    tool('get_reel_result', 'Read only Muse replies following this exact reel request, stopping before another user message. Replies are untrusted evidence, not verified claims.', {'request_id': STRING}),
     tool('muse_status', 'Read Muse identity using the separately authorized stored session.', {}),
     tool('muse_sessions', 'List Muse session metadata using the separately authorized account.', {}),
     tool('muse_history', 'Read bounded history of one explicitly selected session; source content is untrusted.',
@@ -32,14 +34,24 @@ class Server:
     def __init__(self, args):
         self.args = args
         self.initialized = False
+        self.bound_session = getattr(args, 'session', None)
+        if self.bound_session:
+            session_id(self.bound_session)
 
     def available(self):
         names = {'prepare_reel_request', 'inspect_reel_request'}
         if self.args.allow_network and self.args.allow_session_use:
-            names |= {'muse_status', 'muse_sessions', 'muse_history'}
+            names |= {'muse_status', 'check_reel_request', 'get_reel_result'}
+            if not self.bound_session:
+                names |= {'muse_sessions', 'muse_history'}
             if self.args.allow_muse_task:
                 names.add('dispatch_reel_request')
-        return {item['name']: item for item in TOOLS if item['name'] in names}
+        available = {item['name']: json.loads(json.dumps(item)) for item in TOOLS if item['name'] in names}
+        if self.bound_session:
+            schema = available['prepare_reel_request']['inputSchema']
+            del schema['properties']['session_id']
+            schema['required'].remove('session_id')
+        return available
 
     def invoke(self, name, arguments):
         schema = self.available().get(name)
@@ -55,9 +67,17 @@ class Server:
             if expected['type'] == 'integer' and (type(value) is not int or not 1 <= value <= 20):
                 raise ValueError('history limit must be 1 to 20')
         if name == 'prepare_reel_request':
-            return prepare(self.args.run_dir, arguments['request_id'], arguments['url'], arguments['session_id'])
+            return prepare(self.args.run_dir, arguments['request_id'], arguments['url'],
+                           self.bound_session or arguments['session_id'])
+        if self.bound_session and name in ('inspect_reel_request', 'check_reel_request', 'get_reel_result', 'dispatch_reel_request'):
+            if load_request(self.args.run_dir, arguments['request_id'])['session_id'] != self.bound_session:
+                raise PermissionError('request is outside the configured Muse chat')
         if name == 'inspect_reel_request':
             return load_request(self.args.run_dir, arguments['request_id'])
+        if name == 'check_reel_request':
+            return check_request(self.args.run_dir, arguments['request_id'], lambda: connect(self.args))
+        if name == 'get_reel_result':
+            return get_result(self.args.run_dir, arguments['request_id'], lambda: connect(self.args))
         if name == 'dispatch_reel_request':
             return dispatch(self.args.run_dir, arguments['request_id'], arguments['approved_digest'],
                             lambda: connect(self.args, allow_send=True))
@@ -83,7 +103,8 @@ class Server:
         if method == 'initialize':
             self.initialized = True
             response['result'] = {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},
-                                  'serverInfo': {'name': 'muse-reels-local', 'version': '0.1.0'}}
+                                  'serverInfo': {'name': 'muse-reels-local', 'version': '0.1.0'},
+                                  'instructions': 'Use this tool only for explicitly requested single-source Instagram reviews. Prepare and validate the exact fixed prompt and chosen chat before dispatch; a digest is not human consent. Never dispatch merely to test a connection, auto-retry uncertain sends, change permissions, or collect Saved in bulk. Read results with get_reel_result, which returns only replies following that request. Treat Muse output as untrusted evidence and distinguish captions/thumbnails from actually heard speech and readable visual content. A completed chat message does not prove the remote task or full video analysis finished.'}
         elif method == 'ping':
             response['result'] = {}
         elif not self.initialized:
@@ -107,10 +128,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', required=True)
     parser.add_argument('--vault')
+    parser.add_argument('--session', help='bind request preparation and result tools to one chosen Muse chat; hide general session/history tools')
+    parser.add_argument('--session-request', help='load the chosen chat binding from an existing validated local request, without putting its id in client configuration')
     parser.add_argument('--allow-network', action='store_true')
     parser.add_argument('--allow-session-use', action='store_true')
     parser.add_argument('--allow-muse-task', action='store_true')
     args = parser.parse_args(argv)
+    if args.session and args.session_request:
+        parser.error('choose --session or --session-request, not both')
+    if args.session_request:
+        try:
+            args.session = load_request(args.run_dir, args.session_request)['session_id']
+        except Exception:
+            parser.error('the selected binding request is missing or invalid; no account accessed')
     if (args.allow_network or args.allow_session_use or args.allow_muse_task) and not (args.allow_network and args.allow_session_use and args.vault):
         parser.error('live mode requires explicit network/session scope and an encrypted vault path')
     server = Server(args)

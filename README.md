@@ -2,7 +2,7 @@
 
 A restricted Muse companion for turning Instagram ideas into an evidence-backed plan with GPT/Codex. This is our own local derivative of [nikships/muse-cli](https://github.com/nikships/muse-cli), not an official Meta client. Upstream attribution and exact reviewed source blob IDs are in [LICENSE](LICENSE) and [UPSTREAM.json](UPSTREAM.json).
 
-**Current milestone:** offline-tested request preparation, a restricted CLI/MCP adapter, and Windows encrypted session storage. Nothing here has been connected to a real Muse account or used to view Instagram. Live dependency installation, session use, or dispatch needs separate authorization.
+**Current milestone:** request preparation, restricted CLI/MCP access, and Windows encrypted session storage are implemented. A separately authorized live test has now reached Muse: the gateway acknowledged the request, the exact prompt appeared in the selected chat, and Muse reported starting its browser video-watch task. The final speech/visual evidence is still being checked. This is delivery validation, not proof of accurate full-video understanding or permission for bulk access.
 
 ## What changed
 
@@ -50,6 +50,10 @@ Configure a trusted MCP client to launch that command with the checkout's `src` 
 | Explicit account reads | add `--vault`, `--allow-network`, `--allow-session-use` | above plus `muse_status`, `muse_sessions`, `muse_history` |
 | Explicit remote task | additionally `--allow-muse-task` | above plus `dispatch_reel_request`, requiring the reviewed digest |
 
+For the configured one-chat workflow, `--session-request <existing-request-id>` loads a validated local request as the chat binding. Alternatively use `--session <chosen-chat-id>`. Bound mode hides the general session-list/history tools, fills the session automatically when preparing a request, and refuses inspection/results/dispatch for requests belonging to another chat. `check_reel_request` returns match booleans; `get_reel_result` returns only assistant messages after the exact user prompt and before another user turn, excluding unrelated earlier history and identifiable proactive updates. Text/history correlation is best effort, not a server-issued task identity or a guarantee of completion.
+
+The local server can be configured using the client's normal STDIO settings. This setup does not put the session value in MCP arguments or configuration: only the encrypted vault path is supplied. A local handshake/tool-list/result-read smoke test passed. A running client may need its MCP servers restarted to discover newly configured tools; until discovery succeeds, using the same local CLI is still possible. Do not claim native tool availability merely because a configuration entry exists.
+
 There is no credential-entry MCP tool. Account-read mode does not expose dispatch. Flags and a digest do not constitute human permission themselves; the operator/agent must first obtain the user's actual approval for that exact account operation. Approval of code review or repository edits is not account authorization.
 
 ## Live setup is a separate milestone
@@ -91,7 +95,7 @@ The optional [Instagram Reel Watch adaptation](skills/instagram-reel-watch/SKILL
 
 ## Remaining limits
 
-- Live Muse authentication, gateway compatibility, task acceptance, account identity, Instagram access and actual audio/frame understanding have not been tested. The private upstream protocol can change without notice.
+- Live authentication, selected-chat reads, gateway task acceptance, and request visibility were verified on Windows. Muse reports that its browser watch started; a completed evidence report and actual audio/frame understanding remain unverified. The private upstream protocol can change without notice.
 - No video capture, Whisper transcription, image download or arbitrary file writing from Muse responses is implemented here. Keep the previous local capture pipeline available where needed; don't silently fall back to it or claim a caption summary is a full analysis.
 - The HTTP auth requests use fixed Muse endpoints and reject redirects. The WebSocket uses a fixed gateway host and TLS verification. Upstream-derived timeouts and bounded responses do not provide OS resource isolation, an absolute end-to-end deadline, or cancellation of remote work.
 - Responses/history may contain private information or malicious instructions. Do not execute text returned by Muse. No automatic transcript/history dump is committed. Local request/receipt folders and encrypted credentials are ignored by Git.
