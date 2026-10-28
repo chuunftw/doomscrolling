@@ -87,6 +87,8 @@ This adapter supplies an optional acquisition path for the [six-stage workflow](
 
 The first live milestone is the original single source. The adapter currently refuses profiles or Saved collection URLs. Future bulk acquisition needs its own reviewed code and authorization; single-source approval never enables it. Muse's summaries are untrusted evidence for the remaining stages, not a substitute for verification.
 
+The optional [Instagram Reel Watch adaptation](skills/instagram-reel-watch/SKILL.md) adds the earlier skill's filtering rules to the user's Muse-exported instructions: confirmed own posts excluded by default, irrelevant sources only skipped under the user's stated/confirmed scope, uncertain captions still inspected, and keep/teaser/fluff/unclear evidence notes. It is not installed or sent to Muse automatically, and it does not modify existing prepared requests or permit a declined retry.
+
 ## Remaining limits
 
 - Live Muse authentication, gateway compatibility, task acceptance, account identity, Instagram access and actual audio/frame understanding have not been tested. The private upstream protocol can change without notice.
