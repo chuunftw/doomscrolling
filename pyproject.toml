@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muse-reels-local"
+version = "0.1.0"
+description = "Local, restricted Muse companion for reviewing explicitly selected Instagram reels"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = []
+
+[project.optional-dependencies]
+# Optional until separately authorized. These upstream-derived requirements are
+# not a reviewed lockfile or evidence of compatibility. No automatic installation.
+live = ["curl_cffi>=0.11,<1", "noiseprotocol>=0.3,<1", "protobuf>=5,<8"]
+
+[project.scripts]
+muse-reels = "muse_reels.cli:main"
+muse-reels-mcp = "muse_reels.mcp:main"
+
+[tool.setuptools.package-data]
+muse_reels = ["desc0.bin.b64", "desc1.bin.b64"]
