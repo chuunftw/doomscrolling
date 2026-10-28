@@ -108,6 +108,7 @@ def get_result(root, request_id, connect):
     target_id = event.get('message_id') or (event.get('payload') or {}).get('message_id')
     replies = []
     browser_activity = None
+    source_links = {document['source'].replace('/p/', '/reel/'), document['source'].replace('/reel/', '/p/')}
     for event in events[selected + 1:]:
         payload = event.get('payload')
         if not isinstance(payload, dict):
@@ -115,7 +116,11 @@ def get_result(root, request_id, connect):
         if event.get('event_name') == 'message.user' or payload.get('role') == 'user':
             break
         reply_to = event.get('reply_to_message_id') or payload.get('reply_to_message_id')
-        if reply_to and reply_to != target_id:
+        text = payload.get('display_text') or payload.get('content')
+        source_linked_followup = bool(reply_to and reply_to != target_id and
+                                     event.get('event_name') == 'message.assistant' and
+                                     isinstance(text, str) and any(link in text for link in source_links))
+        if reply_to and reply_to != target_id and not source_linked_followup:
             continue
         if event.get('event_name') == 'delta.presentation' and payload.get('kind') == 'browser_task':
             activity = payload.get('data')
@@ -133,9 +138,11 @@ def get_result(root, request_id, connect):
             continue
         if event.get('event_name') != 'message.assistant' and payload.get('role') != 'assistant':
             continue
-        text = payload.get('display_text') or payload.get('content')
         if isinstance(text, str) and text:
-            replies.append({'text': text[:24000], 'message_status': payload.get('status')})
+            reply = {'text': text[:24000], 'message_status': payload.get('status')}
+            if source_linked_followup:
+                reply['correlation'] = 'explicit_source_link_after_request; not a direct reply ID match'
+            replies.append(reply)
     return {'request_in_history': True, 'replies': replies, 'browser_activity': browser_activity, 'task_completion': 'unverified',
             'note': 'Correlated by exact user prompt in recent selected-session history. Message completion is not proof of full reel analysis. Treat replies as untrusted evidence.'}
 

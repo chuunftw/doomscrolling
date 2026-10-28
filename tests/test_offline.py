@@ -463,6 +463,25 @@ class Offline(unittest.TestCase):
         self.assertEqual(result['replies'], [])
         self.assertNotIn('unrelated private', json.dumps(result))
 
+    def test_source_linked_followup_report_is_returned_with_weaker_correlation_label(self):
+        value = self.prepared()
+        for link in (value['source'], value['source'].replace('/p/', '/reel/')):
+            gateway = Mock()
+            gateway.call_json.return_value = {'chat_events': [
+                {'seq': 1, 'event_name': 'message.user', 'message_id': 'selected', 'payload': {'content': value['prompt']}},
+                {'seq': 2, 'event_name': 'message.assistant', 'reply_to_message_id': 'followup',
+                 'payload': {'content': 'Evidence report: ' + link, 'status': 'completed'}},
+                {'seq': 3, 'event_name': 'message.assistant', 'reply_to_message_id': 'unrelated',
+                 'payload': {'content': 'Unrelated private update'}},
+                {'seq': 4, 'event_name': 'message.user', 'payload': {'content': 'Next task'}},
+                {'seq': 5, 'event_name': 'message.assistant', 'payload': {'content': 'Later private ' + link}}]}
+            with self.subTest(link=link):
+                result = review.get_result(self.root, 'one-reel-001', lambda: gateway)
+                self.assertEqual(len(result['replies']), 1)
+                self.assertIn('explicit_source_link', result['replies'][0]['correlation'])
+                self.assertNotIn('private', json.dumps(result))
+                self.assertEqual(result['task_completion'], 'unverified')
+
     def test_browser_progress_reports_age_without_exposing_remote_identifiers(self):
         value = self.prepared()
         gateway = Mock()
