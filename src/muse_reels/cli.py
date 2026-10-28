@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .policy import session_id
-from .review import dispatch, load_request, prepare
+from .review import check_request, dispatch, load_request, prepare
 from .storage import load_cookie, save_cookie
 
 
@@ -40,7 +40,7 @@ def main(argv=None):
     auth.add_argument('--vault', required=True)
     auth.add_argument('--allow-credential-storage', action='store_true')
     auth.add_argument('--replace', action='store_true')
-    for mode in ('status', 'sessions', 'history', 'dispatch'):
+    for mode in ('status', 'sessions', 'history', 'check', 'dispatch'):
         child = sub.add_parser(mode)
         child.add_argument('--vault', required=True)
         child.add_argument('--allow-network', action='store_true')
@@ -48,9 +48,10 @@ def main(argv=None):
         if mode == 'history':
             child.add_argument('--session', required=True)
             child.add_argument('--limit', type=int, default=5)
-        if mode == 'dispatch':
+        if mode in ('check', 'dispatch'):
             child.add_argument('--run-dir', required=True)
             child.add_argument('--id', required=True)
+        if mode == 'dispatch':
             child.add_argument('--approve', required=True, help='exact reviewed request digest')
             child.add_argument('--allow-muse-task', action='store_true')
     args = parser.parse_args(argv)
@@ -73,6 +74,8 @@ def main(argv=None):
             return emit({'stored': 'Windows user-bound encrypted credential; no plaintext backup'})
         if not args.allow_network or not args.allow_session_use:
             raise PermissionError('account access disabled; explicit --allow-network and --allow-session-use required')
+        if args.mode == 'check':
+            return emit(check_request(args.run_dir, args.id, lambda: connect(args)))
         if args.mode == 'dispatch':
             if not args.allow_muse_task:
                 raise PermissionError('dispatch needs explicit --allow-muse-task after review')

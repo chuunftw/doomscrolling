@@ -64,7 +64,15 @@ Once explicitly authorized, account reads can select a session; preparing a revi
 python -B -m muse_reels dispatch --run-dir <run-folder> --id <reviewed-request-id> --approve <reviewed-sha256> --vault <private-path>.dpapi --allow-network --allow-session-use --allow-muse-task
 ```
 
-The digest is a local integrity/review check. It is not a cryptographic signature from the user or a server idempotency key. The tool reports `sent-unconfirmed` when transport bytes were sent; this is not proof that Muse accepted or completed the task. Any connection/send error records `uncertain`. The same request ID cannot be sent twice even after timeout, interruption or a partially written receipt. Inspect Muse and the receipt personally before deliberately preparing any replacement request. Ending the CLI is not a guarantee that a remote task stopped.
+The digest is a local integrity/review check. It is not a cryptographic signature from the user or a server idempotency key. The sender now waits for a successful response on its own gateway stream before reporting `accepted`; that acknowledgement does not prove the task completed or appears in chat history. A matching error response records `rejected` with only its numeric status. Missing acknowledgement or a connection/send error records `uncertain`. Earlier receipts saying `sent-unconfirmed` only prove bytes were sent; they remain uncertain and are never rewritten or automatically retried. The same request ID cannot be sent twice even after timeout, interruption or a partially written receipt. Inspect Muse and the receipt personally before deliberately preparing any replacement request. Ending the CLI is not a guarantee that a remote task stopped.
+
+To check the existing request without printing private chat messages or sending anything, use:
+
+```powershell
+python -B -m muse_reels check --run-dir ".\runs" --id "one-reel-001" --vault "$env:LOCALAPPDATA\MuseReels\session.dpapi" --allow-network --allow-session-use
+```
+
+`request_found` checks for the exact prepared user message in the selected session's last 20 records; `source_mentioned` separately checks whether only its URL appeared. An unrecognized history shape returns `request_found: null` rather than a false no-match. Absence in recent history is not proof of cancellation or delivery failure. This command does not change a receipt or resend a request.
 
 ## The full workflow remains the goal
 

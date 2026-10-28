@@ -93,14 +93,16 @@ class Offline(unittest.TestCase):
         connect.assert_not_called()
         self.assertFalse((self.root / 'receipts').exists())
 
-    def test_dispatch_is_explicit_unconfirmed_and_never_resends_same_request(self):
+    def test_dispatch_waits_for_acceptance_and_never_resends_same_request(self):
         value = self.prepared()
         gateway = Mock()
+        gateway.submit_review.return_value = {'acknowledged': True, 'status': 200, 'stream_id': 1}
         result = review.dispatch(self.root, 'one-reel-001', value['sha256'], lambda: gateway)
-        self.assertEqual(result['state'], 'sent-unconfirmed')
-        gateway._open.assert_called_once()
-        self.assertEqual(gateway._open.call_args.args[0], 'chat.stream')
-        self.assertEqual(gateway._open.call_args.kwargs['body']['session_id'], 'chosen-session')
+        self.assertEqual(result['state'], 'accepted')
+        gateway.submit_review.assert_called_once()
+        self.assertEqual(gateway.submit_review.call_args.args[0]['session_id'], 'chosen-session')
+        self.assertRegex(gateway.submit_review.call_args.args[0]['node_id'], r'^[a-f0-9]{16}$')
+        gateway._open.assert_not_called()
         gateway.close.assert_called_once()
         second = Mock()
         with self.assertRaises(FileExistsError):
@@ -110,7 +112,7 @@ class Offline(unittest.TestCase):
     def test_timeout_records_uncertainty_and_prevents_duplicate_send(self):
         value = self.prepared()
         gateway = Mock()
-        gateway._open.side_effect = TimeoutError('sensitive cookie value should never be printed')
+        gateway.submit_review.side_effect = TimeoutError('sensitive cookie value should never be printed')
         with self.assertRaises(RuntimeError) as error:
             review.dispatch(self.root, 'one-reel-001', value['sha256'], lambda: gateway)
         self.assertNotIn('sensitive cookie', str(error.exception))
@@ -118,16 +120,29 @@ class Offline(unittest.TestCase):
         self.assertEqual(receipt['state'], 'uncertain')
         with self.assertRaises(FileExistsError):
             review.dispatch(self.root, 'one-reel-001', value['sha256'], lambda: gateway)
-        self.assertEqual(gateway._open.call_count, 1)
+        self.assertEqual(gateway.submit_review.call_count, 1)
+
+    def test_missing_acknowledgement_records_uncertainty_and_keeps_duplicate_guard(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.submit_review.return_value = {'acknowledged': False}
+        with self.assertRaises(RuntimeError):
+            review.dispatch(self.root, 'one-reel-001', value['sha256'], lambda: gateway)
+        receipt = json.loads((self.root / 'receipts/one-reel-001.json').read_text())
+        self.assertEqual(receipt['state'], 'uncertain')
+        with self.assertRaises(FileExistsError):
+            review.dispatch(self.root, 'one-reel-001', value['sha256'], lambda: gateway)
 
     def test_denied_network_flags_never_import_or_connect_transport(self):
         with patch('muse_reels.cli.connect') as connect:
-            for mode in ['status', 'sessions', 'history', 'dispatch']:
+            for mode in ['status', 'sessions', 'history', 'check', 'dispatch']:
                 args = [mode, '--vault', str(self.root / 'not-existing.dpapi')]
                 if mode == 'history':
                     args += ['--session', 'chosen-session']
                 if mode == 'dispatch':
                     args += ['--run-dir', str(self.root), '--id', 'x', '--approve', 'x']
+                if mode == 'check':
+                    args += ['--run-dir', str(self.root), '--id', 'x']
                 with self.subTest(mode=mode), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     cli.main(args)
             connect.assert_not_called()
@@ -262,6 +277,76 @@ class Offline(unittest.TestCase):
         target = SimpleNamespace(_open=Mock(return_value=1), _read_frame=Mock(return_value=frame))
         with self.assertRaisesRegex(TimeoutError, 'incomplete'):
             call(target, 'identity')
+
+    def test_submit_waits_for_matching_stream_acknowledgement(self):
+        import time
+        call = self.transport_method('submit_review', {'time': time, 'GatewayError': RuntimeError})
+        unrelated = SimpleNamespace(stream_id=99, WhichOneof=lambda _: 'response', response=SimpleNamespace(status=200))
+        accepted = SimpleNamespace(stream_id=1, WhichOneof=lambda _: 'response', response=SimpleNamespace(status=200))
+        target = SimpleNamespace(_open=Mock(return_value=1), _read_frame=Mock(side_effect=[unrelated, accepted]))
+        self.assertEqual(call(target, {'selected': 'synthetic'})['status'], 200)
+        self.assertEqual(target._read_frame.call_count, 2)
+        self.assertTrue(all(c.kwargs['timeout'] > 0 for c in target._read_frame.call_args_list))
+        target._open.assert_called_once()
+
+    def test_submit_rejection_does_not_retry(self):
+        import time
+        error_class = lambda status, body: RuntimeError('status ' + str(status))
+        call = self.transport_method('submit_review', {'time': time, 'GatewayError': error_class})
+        rejected = SimpleNamespace(stream_id=1, WhichOneof=lambda _: 'response', response=SimpleNamespace(status=400))
+        target = SimpleNamespace(_open=Mock(return_value=1), _read_frame=Mock(return_value=rejected))
+        with self.assertRaisesRegex(RuntimeError, '400'):
+            call(target, {'selected': 'synthetic'})
+        target._open.assert_called_once()
+
+    def test_submit_timeout_does_not_resend(self):
+        import time
+        call = self.transport_method('submit_review', {'time': time, 'GatewayError': RuntimeError})
+        target = SimpleNamespace(_open=Mock(return_value=1), _read_frame=Mock(side_effect=TimeoutError('synthetic timeout')))
+        with self.assertRaises(TimeoutError):
+            call(target, {'selected': 'synthetic'})
+        target._open.assert_called_once()
+
+    def test_check_reports_exact_user_request_without_returning_private_messages(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [
+            {'event_name': 'message.user', 'payload': {'content': value['prompt']}},
+            {'event_name': 'message.assistant', 'payload': {'content': 'unrelated private content'}}]}
+        result = review.check_request(self.root, 'one-reel-001', lambda: gateway)
+        self.assertTrue(result['request_found'])
+        self.assertNotIn('unrelated private content', json.dumps(result))
+        gateway.call_json.assert_called_once_with('chat.history', body={'session_id': 'chosen-session', 'limit': 20})
+        gateway.close.assert_called_once()
+
+    def test_check_does_not_confuse_source_mention_with_the_actual_request(self):
+        self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [{'event_name': 'message.user', 'payload': {'content': URL}}]}
+        result = review.check_request(self.root, 'one-reel-001', lambda: gateway)
+        self.assertFalse(result['request_found'])
+        self.assertTrue(result['source_mentioned'])
+
+    def test_check_empty_history_reports_false_and_unrecognized_history_reports_unknown(self):
+        self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': []}
+        self.assertIs(review.check_request(self.root, 'one-reel-001', lambda: gateway)['request_found'], False)
+        gateway.call_json.return_value = {'unexpected': 'private data'}
+        self.assertIsNone(review.check_request(self.root, 'one-reel-001', lambda: gateway)['request_found'])
+
+    def test_rejection_status_is_reported_without_private_response(self):
+        value = self.prepared()
+        gateway = Mock()
+        error = RuntimeError('sensitive private rejection payload')
+        error.status = 400
+        gateway.submit_review.side_effect = error
+        with self.assertRaisesRegex(RuntimeError, 'gateway status 400') as caught:
+            review.dispatch(self.root, 'one-reel-001', value['sha256'], lambda: gateway)
+        self.assertNotIn('sensitive private', str(caught.exception))
+        record = json.loads((self.root / 'receipts/one-reel-001.json').read_text())
+        self.assertEqual(record['state'], 'rejected')
+        self.assertEqual(record['gateway_status'], 400)
 
     def server(self, live=False, tasks=False):
         return mcp.Server(SimpleNamespace(run_dir=str(self.root), vault='not-read.dpapi',

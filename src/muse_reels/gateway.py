@@ -135,10 +135,10 @@ class Gateway:
         noise.set_as_initiator()
         noise.set_keypair_from_private_bytes(Keypair.STATIC, os.urandom(32))
         noise.start_handshake()
-        self.ws.send_bytes(bytes(noise.write_message(b"")))
-        m2, _ = self.ws.recv()
+        self.ws.send_bytes(bytes(noise.write_message(b"")), timeout=20)
+        m2, _ = self.ws.recv(timeout=20)
         noise.read_message(bytes(m2))
-        self.ws.send_bytes(bytes(noise.write_message(b"")))
+        self.ws.send_bytes(bytes(noise.write_message(b"")), timeout=20)
         assert noise.handshake_finished
         self.noise = noise
         self.stream = 1
@@ -152,15 +152,15 @@ class Gateway:
         fr = NoiseTransportFrame(chunk_id=chunk_id, chunk_index=0, total_chunks=1,
                                  payload=outer.SerializeToString())
         with self._send_lock:
-            self.ws.send_bytes(bytes(self.noise.encrypt(fr.SerializeToString())))
+            self.ws.send_bytes(bytes(self.noise.encrypt(fr.SerializeToString())), timeout=20)
 
-    def _read_frame(self):
+    def _read_frame(self, timeout=20):
         # Serialized so two threads can never interleave ws.recv / Noise
         # decrypt (which corrupts the transport state -> BAD_DECRYPT).
         # Callers must still avoid *logical* races: only one thread should
         # be consuming frames at a time, or responses get misrouted.
         with self._recv_lock:
-            data, _flags = self.ws.recv()
+            data, _flags = self.ws.recv(timeout=timeout)
             if len(data) > 8_000_000:
                 raise GatewayError(-1, "gateway frame exceeds limit")
             pt = bytes(self.noise.decrypt(bytes(data)))
@@ -203,12 +203,40 @@ class Gateway:
         return sid
 
     # -- unary request/response --------------------------------------------
+    def submit_review(self, body, timeout=20):
+        """Wait for this stream's response headers; acceptance is not completion.
+
+        A missing response is uncertain and must never trigger an automatic resend.
+        Error payloads are not returned because they may contain private content.
+        """
+        sid = self._open('chat.stream', body=body)
+        deadline = time.monotonic() + timeout
+        for _ in range(1000):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            frame = self._read_frame(timeout=remaining)
+            if frame.stream_id != sid:
+                continue
+            kind = frame.WhichOneof('kind')
+            if kind == 'reset':
+                raise GatewayError(-1, 'review stream reset before acceptance')
+            if kind == 'response':
+                status = frame.response.status
+                if not 200 <= status < 300:
+                    raise GatewayError(status, 'review stream rejected; private response body suppressed')
+                return {'acknowledged': True, 'status': status, 'stream_id': sid}
+        raise TimeoutError('Muse did not acknowledge this review stream')
+
     def request(self, method, path_params=None, body=None, query=None, timeout=30, route=None):
         sid = self._open(method, path_params, body, query, route=route)
         status, chunks, deadline = None, [], time.monotonic() + timeout
         complete, received, frames = False, 0, 0
-        while time.monotonic() < deadline:
-            sf = self._read_frame()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sf = self._read_frame(timeout=remaining)
             frames += 1
             if frames > 1000:
                 raise GatewayError(-1, "gateway response exceeds frame limit")

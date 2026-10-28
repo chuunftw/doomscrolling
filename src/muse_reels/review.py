@@ -46,6 +46,36 @@ def prepare(root, request_id, url, thread):
     return document
 
 
+def check_request(root, request_id, connect):
+    """Read only the selected session; return no private message text."""
+    document = load_request(root, request_id)
+    gateway = connect()
+    try:
+        history = gateway.call_json('chat.history', body={'session_id': document['session_id'], 'limit': 20})
+    finally:
+        gateway.close()
+    events = history.get('chat_events') if isinstance(history, dict) else None
+    if not isinstance(events, list):
+        return {'request_found': None, 'messages_checked': 0, 'note': 'History response was not recognized; no request sent.'}
+    found, mentioned = False, False
+    expected = ' '.join(document['prompt'].split())
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = event.get('payload')
+        if not isinstance(payload, dict):
+            continue
+        if event.get('event_name') != 'message.user' and payload.get('role') != 'user':
+            continue
+        for key in ('display_text', 'content'):
+            text = payload.get(key)
+            if isinstance(text, str):
+                mentioned |= document['source'] in text
+                found |= ' '.join(text.split()) == expected
+    return {'request_found': found, 'source_mentioned': mentioned, 'messages_checked': len(events),
+            'note': 'Checked only the selected recent history. No request sent; absence here is not proof of cancellation.'}
+
+
 def dispatch(root, request_id, approved_digest, connect):
     document = load_request(root, request_id)
     if not secrets.compare_digest(str(approved_digest), document['sha256']):
@@ -59,17 +89,27 @@ def dispatch(root, request_id, approved_digest, connect):
     gateway = None
     try:
         gateway = connect()
-        gateway._open('chat.stream', body={
-            'session_id': document['session_id'], 'node_id': 'reels-' + secrets.token_hex(8),
+        acknowledgement = gateway.submit_review({
+            'session_id': document['session_id'], 'node_id': secrets.token_hex(8),
             'capabilities': {}, 'items': [{'type': 'text', 'text': document['prompt']}]})
-        result = {'state': 'sent-unconfirmed', 'request_id': request_id, 'sha256': approved_digest,
+        if not isinstance(acknowledgement, dict) or acknowledgement.get('acknowledged') is not True:
+            raise RuntimeError('transport did not provide a positive acknowledgement')
+        result = {'state': 'accepted', 'request_id': request_id, 'sha256': approved_digest,
                   'session_id': document['session_id'],
-                  'note': 'Transport sent bytes. Server acceptance/completion is not proven. Read the selected session before any retry.'}
+                  'gateway_status': acknowledgement['status'],
+                  'note': 'Muse returned a successful stream response. Task completion is not proven; inspect the selected session. Do not resend.'}
         write_json(receipt, result)
         return result
-    except Exception:
-        write_json(receipt, {'state': 'uncertain', 'request_id': request_id, 'sha256': approved_digest,
-                             'note': 'No automatic retry. Inspect the selected Muse session; a task may have started.'})
+    except Exception as error:
+        code = getattr(error, 'status', None)
+        rejected = type(code) is int and 400 <= code <= 599
+        record = {'state': 'rejected' if rejected else 'uncertain', 'request_id': request_id, 'sha256': approved_digest,
+                  'note': 'No automatic retry. Inspect the selected Muse session; a task may have started.'}
+        if rejected:
+            record['gateway_status'] = code
+        write_json(receipt, record)
+        if rejected:
+            raise RuntimeError(f'Muse rejected the request with gateway status {code}. Private response suppressed; no automatic retry.') from None
         raise RuntimeError('Dispatch did not finish cleanly. Inspect the local receipt and Muse before retrying; sensitive error details suppressed.') from None
     finally:
         if gateway:
