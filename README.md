@@ -7,8 +7,8 @@ A restricted Muse companion for turning Instagram ideas into an evidence-backed 
 ## What changed
 
 - The default CLI and MCP modes prepare or inspect a single source-review request without network or credentials.
-- The only gateway routes are Muse identity, session metadata, bounded history of one chosen session, and the fixed single-source review prompt when separately enabled.
-- No raw API escape hatch, permission/approval endpoints, credential-management routes, chat/file deletion, generic free-form send, browser control, cookie export, self-update, installer script, or automatic file downloads.
+- The only gateway routes are Muse identity, session metadata, bounded history of one chosen session, fixed single-source review/document-export prompts when separately enabled, and validated workspace Markdown reads.
+- No raw API escape hatch, permission/approval endpoints, credential-management routes, chat/file deletion, generic free-form send, browser control, cookie export, self-update, installer script, or arbitrary file downloads.
 - A Muse session value can be entered personally in an interactive terminal and encrypted with Windows user-bound DPAPI. No plaintext cookie jar, automatic browser scraping, or plaintext backup is provided.
 - A prepared request includes its exact source, selected Muse session, fixed prompt and SHA-256 digest. Dispatch requires that digest plus explicit network/session/task flags. A local receipt is written before any connection attempt. A possible send is never retried automatically.
 
@@ -46,8 +46,8 @@ Configure a trusted MCP client to launch that command with the checkout's `src` 
 
 | Mode | Startup choices | Tools available |
 | --- | --- | --- |
-| Default | `--run-dir` | `prepare_reel_request`, `inspect_reel_request` |
-| Explicit account reads | add `--vault`, `--allow-network`, `--allow-session-use` | above plus `muse_status`, `muse_sessions`, `muse_history` |
+| Default | `--run-dir` | `prepare_reel_request`, `inspect_reel_request`, `prepare_reel_markdown_export` |
+| Explicit account reads | add `--vault`, `--allow-network`, `--allow-session-use` | above plus `muse_status`, `muse_sessions`, `muse_history`, selected-request checks/results and `collect_reel_markdown` |
 | Explicit remote task | additionally `--allow-muse-task` | above plus `dispatch_reel_request`, requiring the reviewed digest |
 
 For the configured one-chat workflow, `--session-request <existing-request-id>` loads a validated local request as the chat binding. Alternatively use `--session <chosen-chat-id>`. Bound mode hides the general session-list/history tools, fills the session automatically when preparing a request, and refuses inspection/results/dispatch for requests belonging to another chat. `check_reel_request` returns match booleans; `get_reel_result` returns only assistant messages after the exact user prompt and before another user turn, excluding unrelated earlier history and identifiable proactive updates. Text/history correlation is best effort, not a server-issued task identity or a guarantee of completion.
@@ -59,6 +59,18 @@ Result reads also expose the selected request's browser activity separately from
 Muse may deliver its final report as a follow-up whose reply ID differs from the original request. Such an assistant message is returned only when it falls after the exact selected prompt, before another user turn, and explicitly contains the selected Instagram post or equivalent reel link. It carries a weaker source-link correlation label. Unrelated follow-ups remain excluded. A live selected-source report was retrieved this way: Muse claims a full audio/video watch but discloses approximate timestamps, sampled visual frames and missing skill names. These are remote claims and limitations, not independent media verification.
 
 There is no credential-entry MCP tool. Account-read mode does not expose dispatch. Flags and a digest do not constitute human permission themselves; the operator/agent must first obtain the user's actual approval for that exact account operation. Approval of code review or repository edits is not account authorization.
+
+## Muse Markdown handoff
+
+New review requests use schema version 2 and explicitly ask Muse to save its evidence report as UTF-8 Markdown and include a workspace download link. Existing version-1 requests, digests and receipts remain valid and unchanged. For an existing report, `prepare_reel_markdown_export` takes its request ID and a new export ID and prepares a version-3 fixed document-only message: export existing evidence, no rewatch or other account access. This is a new remote operation requiring actual user authorization and the same dispatch/receipt protections; preparing it does not send it.
+
+`collect_reel_markdown(request_id)` reads the selected chat's last 20 records, finds linked `.md` resources after that exact request and before another user turn, and downloads up to five via Muse's authenticated Noise gateway. Source-linked follow-ups are supported. An optional exact `filename` must come from the user; it can select a later artifact in the same bounded chat history. It never guesses remote filenames, enumerates the workspace, opens arbitrary URLs, or accesses other chats. If the link is outside recent history, report that limitation; request an explicitly authorized document-only export rather than silently rewatching or resending the original task.
+
+Only simple `sandbox://workspace/...md` references are accepted. The fixed `markdown.read` GET route rejects external URLs, traversal, encodings, query strings, hidden directories and non-Markdown files. Responses are limited to 1 MB, must decode as UTF-8 and include the selected reel link. Exact bytes are saved as `runs/artifacts/<request-id>/<sha256>.md`, with a provenance sidecar retaining the remote reference and original filename. Identical files can be read again; conflicting files are never overwritten. Local paths are constrained to the run directory. Treat the content as untrusted source evidence; saving it does not install or create a skill. Source-link association does not independently verify its claims.
+
+This retrieval mechanism adapts the upstream client's [generated-file download path](https://github.com/nikships/muse-cli/blob/main/src/muse_cli/gateway.py) with a restricted Markdown-only policy. The offline suite covers version compatibility, document-export prompts, selection/privacy bounds, route validation, exact-byte/hash preservation, conflicting copies and rejected binary/oversized/wrong-source files.
+
+Live handoff verified 2026-10-28: Muse accepted the fixed document-only export for the selected reel, returned a `delta.presentation` file widget, and its 11,769-byte Markdown attachment was downloaded through the authenticated gateway and saved with SHA-256 provenance. File widgets (`data.file`) and text download links are supported; browser widgets are excluded. The 61 offline tests pass on Windows. This proves document delivery, not independent verification of the report's video analysis or claims. Private source artifacts stay in the ignored run folder or the user's separate reel vault, outside Git.
 
 ## Live setup is a separate milestone
 

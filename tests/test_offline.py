@@ -19,7 +19,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
-from muse_reels import cli, policy, review, storage, mcp
+from muse_reels import artifacts, cli, policy, review, storage, mcp
 
 URL = 'https://www.instagram.com/p/DYYAg5WxHYm/'
 
@@ -354,7 +354,7 @@ class Offline(unittest.TestCase):
 
     def test_mcp_default_offers_only_offline_tools(self):
         server = self.server()
-        self.assertEqual(set(server.available()), {'prepare_reel_request', 'inspect_reel_request'})
+        self.assertEqual(set(server.available()), {'prepare_reel_request', 'inspect_reel_request', 'prepare_reel_markdown_export'})
         with self.assertRaises(PermissionError):
             server.invoke('muse_status', {})
 
@@ -365,7 +365,7 @@ class Offline(unittest.TestCase):
         self.assertEqual(result['result']['serverInfo']['name'], 'muse-reels-local')
         self.assertIsNone(server.handle({'jsonrpc': '2.0', 'method': 'notifications/initialized'}))
         result = server.handle({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/list'})
-        self.assertEqual(len(result['result']['tools']), 2)
+        self.assertEqual(len(result['result']['tools']), 3)
 
     def test_mcp_tools_call_prepares_inspectable_request_without_network(self):
         server = self.server()
@@ -424,8 +424,10 @@ class Offline(unittest.TestCase):
         review.prepare(self.root, 'other', URL, 'other-session')
         server = self.server(live=True, tasks=True)
         server.bound_session = 'chosen-session'
-        for name in ['inspect_reel_request', 'check_reel_request', 'get_reel_result', 'dispatch_reel_request']:
+        for name in ['inspect_reel_request', 'check_reel_request', 'get_reel_result', 'dispatch_reel_request', 'collect_reel_markdown', 'prepare_reel_markdown_export']:
             arguments = {'request_id': 'other'}
+            if name == 'prepare_reel_markdown_export':
+                arguments['export_id'] = 'export-other'
             if name == 'dispatch_reel_request':
                 arguments['approved_digest'] = review.load_request(self.root, 'other')['sha256']
             with self.subTest(name=name), patch('muse_reels.mcp.connect') as connect, self.assertRaises(PermissionError):
@@ -530,6 +532,132 @@ class Offline(unittest.TestCase):
             content = base64.b64decode((ROOT / 'src/muse_reels' / (name + '.b64')).read_text().strip(), validate=True)
             git_sha = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest()
             self.assertEqual(git_sha, expected[name])
+
+    def test_markdown_read_policy_rejects_external_paths_and_non_markdown(self):
+        for ref in ['https://evil.test/file.md', 'sandbox://workspace/../secret.md',
+                    'sandbox://workspace/.ssh/secret.md', 'sandbox://workspace/x.md?x=1',
+                    'sandbox://workspace/x%2fsecret.md', 'sandbox://workspace/x.py',
+                    'sandbox://workspace/x.md/../secret.md', 'sandbox://workspace/x\\secret.md']:
+            with self.subTest(ref=ref), self.assertRaises(ValueError):
+                policy.authorize('markdown.read', {'ref': ref})
+        self.assertEqual(policy.authorize('markdown.read', {'ref': 'sandbox://workspace/reports/test.md'}),
+                         ('GET', '/media/raw/workspace/reports/test.md'))
+
+    def test_markdown_read_passes_real_transport_gate_without_query_or_body(self):
+        captured = []
+        def request(**fields):
+            captured.append(fields)
+            return SimpleNamespace(headers=SimpleNamespace(add=lambda: SimpleNamespace()))
+        call = self.transport_method('_open', {'ApplicationRequest': request,
+            'ServiceFrame': lambda **kw: SimpleNamespace(request=Mock(), SerializeToString=lambda: b'frame'),
+            'uuid': uuid, 'urllib': urllib, 'json': json, 'SERVICE_IDS': {'daemon': 0}})
+        target = SimpleNamespace(allow_send=False, stream=1, _send_envelope=Mock())
+        call(target, 'markdown.read', body={'ref': 'sandbox://workspace/report.md'})
+        self.assertEqual(captured[0]['path'], '/media/raw/workspace/report.md')
+        self.assertEqual(captured[0]['verb'], 'GET')
+        self.assertEqual(captured[0]['body'], b'')
+
+    def test_markdown_collection_requires_live_scope_and_rejects_bad_filename_before_connect(self):
+        self.prepared()
+        with patch('muse_reels.mcp.connect') as connect, self.assertRaises(PermissionError):
+            self.server().invoke('collect_reel_markdown', {'request_id': 'one-reel-001'})
+        connect.assert_not_called()
+        for name in ['../secret.md', 'x/y.md', 'file.py', 'x.md?token=secret']:
+            connector = Mock()
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                artifacts.collect_markdown(self.root, 'one-reel-001', connector, filename=name)
+            connector.assert_not_called()
+
+    def test_markdown_resource_parser_skips_missing_non_markdown_and_arbitrary_urls(self):
+        event = {'resources': [{'path': 'sandbox://workspace/missing.md', 'missing': True},
+                               {'variants': {'original': 'sandbox://workspace/report.md'}}],
+                 'payload': {'content': 'https://evil.test/file.md sandbox://workspace/code.py',
+                             'data': {'files': [{'path': 'sandbox://workspace/second.md'}]}}}
+        self.assertEqual(artifacts.markdown_resources(event),
+                         ['sandbox://workspace/report.md', 'sandbox://workspace/second.md'])
+
+    def test_markdown_file_widget_is_downloaded_but_browser_screenshot_is_excluded(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.request.return_value = ('# Generated\n' + URL).encode()
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 1, 'event_name': 'message.user', 'payload': {'content': value['prompt']}},
+            {'seq': 2, 'event_name': 'delta.presentation', 'payload': {'kind': 'file', 'role': 'assistant',
+             'display_text': 'Download report', 'data': {'file': {'path': 'sandbox://workspace/report.md',
+             'mime': 'text/markdown', 'missing': False}}}},
+            {'seq': 3, 'event_name': 'delta.presentation', 'payload': {'kind': 'browser_task',
+             'fallback_text': 'sandbox://workspace/unrelated.md'}}]}
+        result = artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway)
+        self.assertEqual(len(result['files']), 1)
+        self.assertEqual(result['files'][0]['original_filename'], 'report.md')
+        gateway.request.assert_called_once_with('markdown.read', body={'ref': 'sandbox://workspace/report.md'}, timeout=30)
+
+    def test_markdown_collection_downloads_resource_bytes_once_and_preserves_hash(self):
+        value = self.prepared()
+        ref = 'sandbox://workspace/report.md'
+        gateway = Mock()
+        raw = ('# Original report\r\n' + value['source'] + '\r\n').encode()
+        gateway.request.return_value = raw
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 1, 'event_name': 'message.user', 'payload': {'content': value['prompt']}},
+            {'seq': 2, 'event_name': 'message.assistant', 'resources': [{'path': ref}],
+             'payload': {'content': 'Generated report'}}]}
+        result = artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway)
+        saved = Path(result['files'][0]['path'])
+        self.assertEqual(saved.read_bytes(), raw)
+        self.assertEqual(result['files'][0]['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertFalse(result['files'][0]['content_verified'])
+        gateway.request.assert_called_once_with('markdown.read', body={'ref': ref}, timeout=30)
+        self.assertEqual(artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway)['state'], 'saved')
+        saved.write_bytes(b'existing conflicting data')
+        with self.assertRaisesRegex(ValueError, 'no overwrite'):
+            artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway)
+        self.assertEqual(saved.read_bytes(), b'existing conflicting data')
+
+    def test_markdown_collection_excludes_unrelated_and_later_resources(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 0, 'event_name': 'message.assistant', 'resources': ['sandbox://workspace/old.md']},
+            {'seq': 1, 'event_name': 'message.user', 'message_id': 'target', 'payload': {'content': value['prompt']}},
+            {'seq': 2, 'event_name': 'message.assistant', 'reply_to_message_id': 'other', 'resources': ['sandbox://workspace/private.md']},
+            {'seq': 3, 'event_name': 'message.user', 'payload': {'content': 'Next unrelated task'}},
+            {'seq': 4, 'event_name': 'message.assistant', 'resources': ['sandbox://workspace/later.md']}]}
+        self.assertEqual(artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway)['files'], [])
+        gateway.request.assert_not_called()
+        gateway.request.return_value = ('# Report\n' + URL).encode()
+        result = artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway, filename='later.md')
+        self.assertEqual(len(result['files']), 1)
+        self.assertEqual(result['files'][0]['original_filename'], 'later.md')
+
+    def test_markdown_collection_rejects_wrong_source_binary_and_oversize(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 1, 'event_name': 'message.user', 'payload': {'content': value['prompt']}},
+            {'seq': 2, 'event_name': 'message.assistant', 'payload': {'content': '[Report](sandbox://workspace/report.md)'}}]}
+        for raw in [b'Unrelated report', b'\xff', b'\x00' + URL.encode(), b'x' * 1000001]:
+            gateway.request.return_value = raw
+            with self.subTest(size=len(raw)), self.assertRaises((ValueError, UnicodeError)):
+                artifacts.collect_markdown(self.root, 'one-reel-001', lambda: gateway)
+        self.assertFalse((self.root / 'artifacts').exists())
+
+    def test_old_requests_remain_valid_and_export_prompt_is_fixed(self):
+        old = self.prepared()
+        old['version'] = 1
+        old['prompt'] = policy.reel_prompt(URL)
+        old['sha256'] = review.digest(old)
+        storage.write_json(self.root / 'requests/one-reel-001.json', old)
+        self.assertEqual(review.load_request(self.root, 'one-reel-001'), old)
+        exported = self.server().invoke('prepare_reel_markdown_export', {'request_id': 'one-reel-001', 'export_id': 'handoff'})
+        self.assertEqual(exported['version'], 3)
+        self.assertIn('Do not rewatch', exported['prompt'])
+        body = {'session_id': 'chosen-session', 'node_id': 'node', 'capabilities': {},
+                'items': [{'type': 'text', 'text': exported['prompt']}]}
+        self.assertEqual(policy.authorize('chat.stream', body, allow_send=True), ('POST', '/chat/stream'))
+        body['items'][0]['text'] += ' Extra instruction'
+        with self.assertRaises(PermissionError):
+            policy.authorize('chat.stream', body, allow_send=True)
 
 
 if __name__ == '__main__':

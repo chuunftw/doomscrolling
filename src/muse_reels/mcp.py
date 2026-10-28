@@ -4,6 +4,7 @@ import json
 import sys
 
 from .cli import connect
+from .artifacts import collect_markdown
 from .policy import session_id
 from .review import check_request, dispatch, get_result, load_request, prepare
 
@@ -16,6 +17,10 @@ def tool(name, description, properties, required=None):
 
 STRING = {'type': 'string', 'minLength': 1, 'maxLength': 10000}
 TOOLS = [
+    tool('prepare_reel_markdown_export', 'Offline: prepare a fixed document-only handoff for an existing reel request. No rewatch or external access. Dispatch still requires actual user authorization.',
+         {'request_id': STRING, 'export_id': STRING}),
+    tool('collect_reel_markdown', 'Download selected-source linked Muse Markdown into the local run folder. Optional filename must be explicitly selected by the user; never guess it. Preserves untrusted original bytes; does not create/install skills.',
+         {'request_id': STRING, 'filename': STRING}, ['request_id']),
     tool('prepare_reel_request', 'Offline: prepare one-source request for human review; no Muse/account access.',
          {'request_id': STRING, 'url': STRING, 'session_id': STRING}),
     tool('inspect_reel_request', 'Offline: validate and print a prepared request and its digest.', {'request_id': STRING}),
@@ -39,9 +44,9 @@ class Server:
             session_id(self.bound_session)
 
     def available(self):
-        names = {'prepare_reel_request', 'inspect_reel_request'}
+        names = {'prepare_reel_request', 'inspect_reel_request', 'prepare_reel_markdown_export'}
         if self.args.allow_network and self.args.allow_session_use:
-            names |= {'muse_status', 'check_reel_request', 'get_reel_result'}
+            names |= {'muse_status', 'check_reel_request', 'get_reel_result', 'collect_reel_markdown'}
             if not self.bound_session:
                 names |= {'muse_sessions', 'muse_history'}
             if self.args.allow_muse_task:
@@ -69,15 +74,20 @@ class Server:
         if name == 'prepare_reel_request':
             return prepare(self.args.run_dir, arguments['request_id'], arguments['url'],
                            self.bound_session or arguments['session_id'])
-        if self.bound_session and name in ('inspect_reel_request', 'check_reel_request', 'get_reel_result', 'dispatch_reel_request'):
+        if self.bound_session and name in ('inspect_reel_request', 'check_reel_request', 'get_reel_result', 'dispatch_reel_request', 'collect_reel_markdown', 'prepare_reel_markdown_export'):
             if load_request(self.args.run_dir, arguments['request_id'])['session_id'] != self.bound_session:
                 raise PermissionError('request is outside the configured Muse chat')
+        if name == 'prepare_reel_markdown_export':
+            original = load_request(self.args.run_dir, arguments['request_id'])
+            return prepare(self.args.run_dir, arguments['export_id'], original['source'], original['session_id'], export=True)
         if name == 'inspect_reel_request':
             return load_request(self.args.run_dir, arguments['request_id'])
         if name == 'check_reel_request':
             return check_request(self.args.run_dir, arguments['request_id'], lambda: connect(self.args))
         if name == 'get_reel_result':
             return get_result(self.args.run_dir, arguments['request_id'], lambda: connect(self.args))
+        if name == 'collect_reel_markdown':
+            return collect_markdown(self.args.run_dir, arguments['request_id'], lambda: connect(self.args), arguments.get('filename'))
         if name == 'dispatch_reel_request':
             return dispatch(self.args.run_dir, arguments['request_id'], arguments['approved_digest'],
                             lambda: connect(self.args, allow_send=True))

@@ -36,9 +36,18 @@ def identifier(value):
     return value
 
 
-def reel_prompt(url):
+def markdown_ref(value):
+    if not isinstance(value, str) or not re.fullmatch(
+            r'sandbox://workspace/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.md', value):
+        raise ValueError('only a generated workspace Markdown reference is accepted')
+    if any(part in ('.', '..') for part in value.split('/')):
+        raise ValueError('invalid Markdown reference')
+    return value
+
+
+def reel_prompt(url, markdown=False):
     url = source_url(url)
-    return (
+    prompt = (
         'Analyze only this explicitly selected Instagram source: ' + url + '\n'
         'This is an evidence-collection task for a coding/AI/automation review. '
         'Do not browse my Saved collection, other posts, DMs, email, or other connected accounts. '
@@ -54,9 +63,31 @@ def reel_prompt(url):
         'Return evidence and limitations for GPT/Codex to check against official docs, merge duplicates, '
         'assess current/other-project/library fit, and prepare a ranked plan. Do not implement anything.'
     )
+    if markdown:
+        prompt += ('\nSave the completed evidence report as a UTF-8 Markdown file in your workspace, '
+                   'including this exact source URL and all access limitations. '
+                   'Include its sandbox://workspace/...md download link in your final reply. '
+                   'This is your generated report, not the creator\'s original skill. Do not install or create skills.')
+    return prompt
+
+
+def export_prompt(url):
+    return ('Export only your existing report for this explicitly selected Instagram source: ' + source_url(url) + '\n'
+            'This is a document handoff, not a new review. Do not rewatch, browse, access Instagram or other accounts, '
+            'message anyone, install, execute source code, change permissions, or approve actions. '
+            'Use only your existing evidence and assessment for this source in this selected chat. '
+            'Preserve its limitations and distinguish your generated notes from the creator\'s original skills. '
+            'Save the report as UTF-8 Markdown under sandbox://workspace/ with this exact source URL in the file. '
+            'Return a sandbox://workspace/...md download link in your final reply. '
+            'If no existing report is available, say so and stop. Do not create or install skills.')
 
 
 def authorize(method, body=None, allow_send=False):
+    if method == 'markdown.read':
+        if not isinstance(body, dict) or set(body) != {'ref'}:
+            raise ValueError('Markdown read requires one validated reference')
+        ref = markdown_ref(body['ref'])
+        return ('GET', '/media/raw/' + ref[len('sandbox://'):])
     if method in READ_ROUTES:
         if method == 'chat.history':
             if not isinstance(body, dict) or set(body) != {'session_id', 'limit'}:
@@ -78,7 +109,7 @@ def authorize(method, body=None, allow_send=False):
     item = body['items'][0]
     if not isinstance(item, dict) or set(item) != {'type', 'text'} or item['type'] != 'text':
         raise ValueError('unsupported message type')
-    match = re.match(r'Analyze only this explicitly selected Instagram source: (https://[^\s]+)\n', item['text'])
-    if not match or item['text'] != reel_prompt(match[1]):
+    match = re.match(r'(?:Analyze only this explicitly selected Instagram source: |Export only your existing report for this explicitly selected Instagram source: )(https://[^\s]+)\n', item['text'])
+    if not match or item['text'] not in (reel_prompt(match[1]), reel_prompt(match[1], markdown=True), export_prompt(match[1])):
         raise PermissionError('only the fixed one-source review prompt can be sent')
     return SEND_ROUTE

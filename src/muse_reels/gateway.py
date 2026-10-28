@@ -2,7 +2,7 @@
 
 Derived from the muse.ai web app's own protocol (route table + framing observed
 in its client bundle). Talks to the user's personal VM gateway directly.
-Restricted derivative of nikships/muse-cli; only four reviewed routes remain.
+Restricted derivative of nikships/muse-cli; fixed review/read routes only.
 Session acquisition is outside this module; no browser or cookie export exists.
 """
 import json
@@ -177,6 +177,8 @@ class Gateway:
             raise PermissionError("custom routes and query overrides are disabled")
         verb, path = authorize(method, body, allow_send=self.allow_send)
         route = {"http": verb, "path": path}
+        if method == 'markdown.read':
+            body = None  # Validated reference is already encoded in the fixed read path.
         if verb == "GET":
             query, body = body, None
         for k, v in (path_params or {}).items():
@@ -259,12 +261,12 @@ class Gateway:
                     break
             elif kind == "reset":
                 raise GatewayError(-1, f"stream reset {sf.reset.code}: {sf.reset.reason}")
-            if received > 8_000_000:
+            if received > (1_000_000 if method == 'markdown.read' else 8_000_000):
                 raise GatewayError(-1, "gateway response exceeds byte limit")
         if status is None or not complete:
             raise TimeoutError(f"incomplete response for {method}")
         payload = b"".join(chunks)
-        if len(payload) > 8_000_000:
+        if len(payload) > (1_000_000 if method == 'markdown.read' else 8_000_000):
             raise GatewayError(-1, "gateway response exceeds byte limit")
         if status < 200 or status >= 300:
             raise GatewayError(status, payload[:500].decode("utf-8", "replace"))

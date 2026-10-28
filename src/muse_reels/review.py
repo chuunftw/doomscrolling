@@ -5,7 +5,7 @@ import secrets
 import time
 from pathlib import Path
 
-from .policy import identifier, reel_prompt, session_id, source_url
+from .policy import export_prompt, identifier, reel_prompt, session_id, source_url
 from .storage import beneath, write_json
 
 FIELDS = {'version', 'request_id', 'source', 'session_id', 'prompt', 'sha256'}
@@ -21,23 +21,25 @@ def load_request(root, request_id):
     if path.stat().st_size > 50_000:
         raise ValueError('request file exceeds size limit')
     document = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(document, dict) or set(document) != FIELDS or document['version'] != 1:
+    if not isinstance(document, dict) or set(document) != FIELDS or document['version'] not in (1, 2, 3):
         raise ValueError('unsupported request schema')
     if document['request_id'] != request_id:
         raise ValueError('request id does not match file')
     session_id(document['session_id'])
-    if document['source'] != source_url(document['source']) or document['prompt'] != reel_prompt(document['source']):
+    expected_prompt = export_prompt(document['source']) if document['version'] == 3 else reel_prompt(document['source'], markdown=document['version'] == 2)
+    if document['source'] != source_url(document['source']) or document['prompt'] != expected_prompt:
         raise ValueError('request contains an unsupported URL or prompt')
     if document['sha256'] != digest(document):
         raise ValueError('request digest mismatch')
     return document
 
 
-def prepare(root, request_id, url, thread):
+def prepare(root, request_id, url, thread, export=False):
     request_id = identifier(request_id)
     url, thread = source_url(url), session_id(thread)
     path = beneath(root, 'requests/' + request_id + '.json')
-    document = {'version': 1, 'request_id': request_id, 'source': url, 'session_id': thread, 'prompt': reel_prompt(url)}
+    document = {'version': 3 if export else 2, 'request_id': request_id, 'source': url, 'session_id': thread,
+                'prompt': export_prompt(url) if export else reel_prompt(url, markdown=True)}
     document['sha256'] = digest(document)
     if path.exists():
         raise FileExistsError('request already exists; inspect it rather than overwriting it')
