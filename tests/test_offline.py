@@ -463,6 +463,36 @@ class Offline(unittest.TestCase):
         self.assertEqual(result['replies'], [])
         self.assertNotIn('unrelated private', json.dumps(result))
 
+    def test_browser_progress_reports_age_without_exposing_remote_identifiers(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 1, 'event_name': 'message.user', 'payload': {'content': value['prompt']}},
+            {'seq': 2, 'event_name': 'delta.presentation', 'payload': {'kind': 'browser_task', 'role': 'assistant',
+             'display_text': 'Unmuting', 'data': {'status': 'Running', 'updated_at_ms': 600000,
+             'browser_task_id': 'private-id', 'latest_screenshot': {'url': 'private-path'}}}}]}
+        with patch('muse_reels.review.time.time', return_value=1000):
+            result = review.get_result(self.root, 'one-reel-001', lambda: gateway)
+        self.assertEqual(result['browser_activity']['seconds_since_update'], 400)
+        self.assertTrue(result['browser_activity']['stale_progress'])
+        self.assertEqual(result['replies'], [])
+        self.assertNotIn('private-', json.dumps(result))
+        self.assertEqual(result['task_completion'], 'unverified')
+
+    def test_browser_progress_ignores_other_reply_and_future_timestamp(self):
+        value = self.prepared()
+        gateway = Mock()
+        gateway.call_json.return_value = {'chat_events': [
+            {'seq': 1, 'event_name': 'message.user', 'message_id': 'selected', 'payload': {'content': value['prompt']}},
+            {'seq': 2, 'event_name': 'delta.presentation', 'reply_to_message_id': 'other',
+             'payload': {'kind': 'browser_task', 'data': {'activity_title': 'private-title'}}},
+            {'seq': 3, 'event_name': 'delta.presentation', 'payload': {'kind': 'browser_task',
+             'data': {'status': 'Running', 'updated_at_ms': 2000000}}}]}
+        with patch('muse_reels.review.time.time', return_value=1000):
+            result = review.get_result(self.root, 'one-reel-001', lambda: gateway)
+        self.assertNotIn('seconds_since_update', result['browser_activity'])
+        self.assertNotIn('private-title', json.dumps(result))
+
     def test_result_read_unknown_shape_does_not_claim_missing_request(self):
         self.prepared()
         gateway = Mock()

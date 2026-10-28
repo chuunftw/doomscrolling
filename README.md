@@ -54,6 +54,8 @@ For the configured one-chat workflow, `--session-request <existing-request-id>` 
 
 The local server can be configured using the client's normal STDIO settings. This setup does not put the session value in MCP arguments or configuration: only the encrypted vault path is supplied. A local handshake/tool-list/result-read smoke test passed. A running client may need its MCP servers restarted to discover newly configured tools; until discovery succeeds, using the same local CLI is still possible. Do not claim native tool availability merely because a configuration entry exists.
 
+Result reads also expose the selected request's browser activity separately from assistant replies: reported status, activity title and age of its last update. Five minutes without an update is marked `stale_progress`, which is a diagnostic hint, not proof of failure or cancellation. Missing or future timestamps do not produce an age. Browser task IDs, screenshot paths and browser URLs are omitted. A `Running` browser task or a `completed` progress message never proves full video/audio access. If progress stops, inspect that task in Muse for a playback/login/permission blocker; resolve access personally rather than granting broad permissions, auto-resending the request or bypassing the restricted routes. An uploaded video is an alternative acquisition path, with its actual audio/visual coverage verified separately.
+
 There is no credential-entry MCP tool. Account-read mode does not expose dispatch. Flags and a digest do not constitute human permission themselves; the operator/agent must first obtain the user's actual approval for that exact account operation. Approval of code review or repository edits is not account authorization.
 
 ## Live setup is a separate milestone
