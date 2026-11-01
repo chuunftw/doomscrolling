@@ -1,5 +1,7 @@
 # doomscrolling
 
+The first seven [reel-derived Codex skills](docs/reel-derived-skills.md) are available under `.agents/skills`: specification planning, independent review, minimal changes, bounded browser evaluation, parallel-work boundaries, authentication review and atomic database updates. They are our documented adaptations of the supplied Muse batch report, with source links and verification limits, rather than recovered creator skills or an automatically running agent pipeline.
+
 A restricted Muse companion for turning Instagram ideas into an evidence-backed plan with GPT/Codex. This is our own local derivative of [nikships/muse-cli](https://github.com/nikships/muse-cli), not an official Meta client. Upstream attribution and exact reviewed source blob IDs are in [LICENSE](LICENSE) and [UPSTREAM.json](UPSTREAM.json).
 
 **Current milestone:** request preparation, restricted CLI/MCP access, and Windows encrypted session storage are implemented. A separately authorized live test has now reached Muse: the gateway acknowledged the request, the exact prompt appeared in the selected chat, and Muse reported starting its browser video-watch task. The final speech/visual evidence is still being checked. This is delivery validation, not proof of accurate full-video understanding or permission for bulk access.
